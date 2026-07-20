@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
 
 	"github.com/justinsb/identityctl/pkg/gcp"
 	"github.com/justinsb/identityctl/pkg/kube"
@@ -89,6 +90,8 @@ Re-running is safe, and refreshes the uploaded signing keys.`,
 }
 
 func runGCPInit(ctx context.Context, options *gcpOptions) error {
+	log := klog.FromContext(ctx)
+
 	kubeClient, err := kube.NewClient(options.KubeContext)
 	if err != nil {
 		return err
@@ -97,6 +100,7 @@ func runGCPInit(ctx context.Context, options *gcpOptions) error {
 		return err
 	}
 
+	log.Info("discovering kubernetes cluster OIDC configuration")
 	discovery, err := kubeClient.Discover(ctx)
 	if err != nil {
 		return err

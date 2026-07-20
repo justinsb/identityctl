@@ -24,6 +24,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/google/externalaccount"
+	"k8s.io/klog/v2"
 )
 
 // TokenDir is the well-known directory where pods mount the projected
@@ -41,6 +42,7 @@ const audiencePrefix = "https://iam.googleapis.com/projects/"
 // resolution order described in the package documentation. If no scopes are
 // given, the cloud-platform scope is used.
 func TokenSource(ctx context.Context, scopes ...string) (oauth2.TokenSource, error) {
+	log := klog.FromContext(ctx)
 	if len(scopes) == 0 {
 		scopes = []string{cloudPlatformScope}
 	}
@@ -48,6 +50,7 @@ func TokenSource(ctx context.Context, scopes ...string) (oauth2.TokenSource, err
 		return google.DefaultTokenSource(ctx, scopes...)
 	}
 	if _, err := os.Stat(TokenPath); err == nil {
+		log.Info("using projected service account token", "tokenPath", TokenPath)
 		return FileTokenSource(ctx, TokenPath, scopes...)
 	}
 	return google.DefaultTokenSource(ctx, scopes...)
@@ -59,6 +62,7 @@ func TokenSource(ctx context.Context, scopes ...string) (oauth2.TokenSource, err
 // which the STS exchange is configured. The file is re-read on each token
 // refresh, so kubelet rotation is handled transparently.
 func FileTokenSource(ctx context.Context, tokenPath string, scopes ...string) (oauth2.TokenSource, error) {
+	log := klog.FromContext(ctx)
 	if len(scopes) == 0 {
 		scopes = []string{cloudPlatformScope}
 	}
@@ -71,6 +75,7 @@ func FileTokenSource(ctx context.Context, tokenPath string, scopes ...string) (o
 		return nil, fmt.Errorf("inspecting service account token %q: %w", tokenPath, err)
 	}
 
+	log.Info("using workload identity provider audience", "audience", audience)
 	config := externalaccount.Config{
 		// The STS audience is the provider resource name prefixed with "//".
 		Audience:         strings.TrimPrefix(audience, "https:"),

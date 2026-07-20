@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"google.golang.org/api/serviceusage/v1"
+	"k8s.io/klog/v2"
 )
 
 // RequiredServices are the APIs needed for workload identity federation and
@@ -20,6 +21,8 @@ var RequiredServices = []string{
 // EnsureServices enables the given services on the project if they are not
 // already enabled.
 func (c *Client) EnsureServices(ctx context.Context, projectID string, services []string) error {
+	log := klog.FromContext(ctx)
+
 	serviceUsage, err := serviceusage.NewService(ctx)
 	if err != nil {
 		return fmt.Errorf("building serviceusage client: %w", err)
@@ -28,11 +31,13 @@ func (c *Client) EnsureServices(ctx context.Context, projectID string, services 
 	parent := "projects/" + projectID
 	var toEnable []string
 	for _, service := range services {
+		log.Info("checking if service is enabled", "service", parent+"/services/"+service)
 		state, err := serviceUsage.Services.Get(parent + "/services/" + service).Context(ctx).Do()
 		if err != nil {
 			return fmt.Errorf("getting state of service %q: %w", service, err)
 		}
 		if state.State != "ENABLED" {
+			log.Info("service is not enabled, adding to enable list", "service", service)
 			toEnable = append(toEnable, service)
 		}
 	}
@@ -40,7 +45,7 @@ func (c *Client) EnsureServices(ctx context.Context, projectID string, services 
 		return nil
 	}
 
-	fmt.Printf("enabling services %v on project %s\n", toEnable, projectID)
+	log.Info("enabling services %v on project %s", toEnable, projectID)
 	operation, err := serviceUsage.Services.BatchEnable(parent, &serviceusage.BatchEnableServicesRequest{
 		ServiceIds: toEnable,
 	}).Context(ctx).Do()
