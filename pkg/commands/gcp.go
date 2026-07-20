@@ -132,10 +132,16 @@ func runGCPInit(ctx context.Context, options *gcpOptions) error {
 
 func buildGCPGrantCommand() *cobra.Command {
 	options := &gcpOptions{}
-	var namespace, serviceAccount, bucket, role string
+	var namespace, serviceAccount, bucket string
+	var roles []string
 	cmd := &cobra.Command{
 		Use:   "grant",
-		Short: "Grant a Kubernetes service account a role on a GCS bucket",
+		Short: "Grant a Kubernetes service account access to a GCS bucket",
+		Long: `Grants IAM roles on a GCS bucket to a Kubernetes service account (as a
+federated principal). The default roles allow full object access plus
+bucket metadata reads: roles/storage.objectAdmin does not include
+storage.buckets.get, which clients commonly need (e.g. to check the bucket
+exists), so roles/storage.legacyBucketReader is granted alongside it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			gcpClient, err := gcp.NewClient(ctx)
@@ -148,14 +154,16 @@ func buildGCPGrantCommand() *cobra.Command {
 			}
 			subject := gcp.KubernetesSubject(namespace, serviceAccount)
 			member := gcp.PrincipalForSubject(projectNumber, options.Pool, subject)
-			modified, err := gcpClient.EnsureBucketBinding(ctx, bucket, member, role)
-			if err != nil {
-				return err
-			}
-			if modified {
-				fmt.Printf("granted %s on bucket %q to %s\n", role, bucket, member)
-			} else {
-				fmt.Printf("%s already has %s on bucket %q\n", member, role, bucket)
+			for _, role := range roles {
+				modified, err := gcpClient.EnsureBucketBinding(ctx, bucket, member, role)
+				if err != nil {
+					return err
+				}
+				if modified {
+					fmt.Printf("granted %s on bucket %q to %s\n", role, bucket, member)
+				} else {
+					fmt.Printf("%s already has %s on bucket %q\n", member, role, bucket)
+				}
 			}
 			return nil
 		},
@@ -164,7 +172,7 @@ func buildGCPGrantCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Kubernetes namespace of the service account")
 	cmd.Flags().StringVar(&serviceAccount, "serviceaccount", "", "Kubernetes service account name")
 	cmd.Flags().StringVar(&bucket, "bucket", "", "GCS bucket name")
-	cmd.Flags().StringVar(&role, "role", "roles/storage.objectAdmin", "IAM role to grant on the bucket")
+	cmd.Flags().StringSliceVar(&roles, "role", []string{"roles/storage.objectAdmin", "roles/storage.legacyBucketReader"}, "IAM roles to grant on the bucket")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("serviceaccount")
 	_ = cmd.MarkFlagRequired("bucket")
