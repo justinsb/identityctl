@@ -43,18 +43,46 @@ intermediate GCP service account or impersonation.
 
 ### 3. Give the workload credentials
 
-```sh
-identityctl gcp credentials --project my-project --namespace cloudetcd
+The only thing a pod needs is a projected service account token whose
+audience is the workload identity provider; `identityctl gcp podspec
+--project my-project` prints the exact snippet:
+
+```yaml
+  volumes:
+  - name: gcp-token
+    projected:
+      sources:
+      - serviceAccountToken:
+          audience: https://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/kubernetes/providers/<cluster>
+          path: token
+  containers:
+  - # your container:
+    volumeMounts:
+    - name: gcp-token
+      mountPath: /var/run/secrets/identityctl
+      readOnly: true
 ```
 
-This writes a `gcp-credentials` ConfigMap into the namespace containing an
-[external account credential
-configuration](https://cloud.google.com/iam/docs/workload-identity-federation-with-kubernetes),
-and prints the pod spec additions needed: a projected service account token
-volume (with the provider as audience) and
-`GOOGLE_APPLICATION_CREDENTIALS` pointing at the mounted configuration.
-Google client libraries pick this up automatically and exchange the
-Kubernetes token for GCP credentials transparently.
+In the workload, use the `workloadidentity` package to get a token source:
+
+```go
+import (
+    "cloud.google.com/go/storage"
+    "google.golang.org/api/option"
+
+    "github.com/justinsb/identityctl/pkg/workloadidentity"
+)
+
+tokenSource, err := workloadidentity.TokenSource(ctx)
+client, err := storage.NewClient(ctx, option.WithTokenSource(tokenSource))
+```
+
+There is no other configuration: the token's own audience identifies the
+workload identity provider, so the library derives the STS exchange from it.
+If `GOOGLE_APPLICATION_CREDENTIALS` is set it takes precedence, and if
+neither is present the library falls back to the normal application default
+credentials chain — so the same binary runs unchanged on GKE, on GCE, or on
+a developer machine.
 
 ## How it works
 
@@ -66,6 +94,7 @@ Kubernetes token for GCP credentials transparently.
 2. `grant` adds an IAM binding on a GCS bucket for
    `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/subject/<subject>`.
 3. At runtime, the pod's projected token (audience =
-   `https://iam.googleapis.com/<provider>`) is exchanged at
-   `sts.googleapis.com` for a federated access token, which GCS accepts
-   directly.
+   `https://iam.googleapis.com/<provider>`, the provider's default allowed
+   audience) is exchanged at `sts.googleapis.com` for a federated access
+   token, which GCS accepts directly. The kubelet rotates the projected
+   token automatically, and the library re-reads it on each refresh.

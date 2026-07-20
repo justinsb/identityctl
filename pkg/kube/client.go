@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -81,28 +78,4 @@ func (c *Client) JWKS(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("fetching cluster JWKS: %w", err)
 	}
 	return body, nil
-}
-
-// ApplyConfigMap creates or updates a ConfigMap.
-func (c *Client) ApplyConfigMap(ctx context.Context, namespace, name string, data map[string]string) error {
-	configMaps := c.clientset.CoreV1().ConfigMaps(namespace)
-	existing, err := configMaps.Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err := configMaps.Create(ctx, &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-			Data:       data,
-		}, metav1.CreateOptions{})
-		if err != nil {
-			return fmt.Errorf("creating configmap %s/%s: %w", namespace, name, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting configmap %s/%s: %w", namespace, name, err)
-	}
-	existing.Data = data
-	if _, err := configMaps.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("updating configmap %s/%s: %w", namespace, name, err)
-	}
-	return nil
 }

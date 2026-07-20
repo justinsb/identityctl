@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,16 +10,8 @@ import (
 
 	"github.com/justinsb/identityctl/pkg/gcp"
 	"github.com/justinsb/identityctl/pkg/kube"
+	"github.com/justinsb/identityctl/pkg/workloadidentity"
 )
-
-// TokenMountPath is where the projected service account token is mounted in pods.
-const TokenMountPath = "/var/run/secrets/identityctl"
-
-// CredentialsMountPath is where the credential configuration is mounted in pods.
-const CredentialsMountPath = "/etc/identityctl"
-
-// CredentialsKey is the ConfigMap key (and file name) for the credential configuration.
-const CredentialsKey = "credential-configuration.json"
 
 type gcpOptions struct {
 	Project     string
@@ -74,7 +65,7 @@ func BuildGCPCommand() *cobra.Command {
 	}
 	cmd.AddCommand(buildGCPInitCommand())
 	cmd.AddCommand(buildGCPGrantCommand())
-	cmd.AddCommand(buildGCPCredentialsCommand())
+	cmd.AddCommand(buildGCPPodSpecCommand())
 	return cmd
 }
 
@@ -176,15 +167,15 @@ func buildGCPGrantCommand() *cobra.Command {
 	return cmd
 }
 
-func buildGCPCredentialsCommand() *cobra.Command {
+func buildGCPPodSpecCommand() *cobra.Command {
 	options := &gcpOptions{}
-	var namespace, configMapName string
 	cmd := &cobra.Command{
-		Use:   "credentials",
-		Short: "Write a ConfigMap with the GCP credential configuration for workloads",
-		Long: `Generates an external-account credential configuration for the cluster's
-workload identity provider and stores it in a ConfigMap in the given
-namespace. Prints the pod spec additions needed to use it.`,
+		Use:   "podspec",
+		Short: "Print the pod spec additions a workload needs for GCP access",
+		Long: `Prints the projected service account token volume a pod needs to
+authenticate to GCP. The token's audience identifies the workload identity
+provider, so workloads using the identityctl workloadidentity library need no
+other configuration.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			kubeClient, err := kube.NewClient(options.KubeContext)
@@ -203,56 +194,12 @@ namespace. Prints the pod spec additions needed to use it.`,
 				return err
 			}
 			providerName := gcp.ProviderName(fmt.Sprintf("%d", projectNumber), options.Pool, options.Provider)
-
-			credentialConfiguration, err := buildCredentialConfiguration(providerName)
-			if err != nil {
-				return err
-			}
-			data := map[string]string{CredentialsKey: string(credentialConfiguration)}
-			if err := kubeClient.ApplyConfigMap(ctx, namespace, configMapName, data); err != nil {
-				return err
-			}
-			fmt.Printf("configmap %s/%s ready\n", namespace, configMapName)
-			fmt.Printf("\nAdd the following to your pod spec:\n\n%s", podSpecSnippet(providerName, configMapName))
+			fmt.Printf("Add the following to your pod spec:\n\n%s", podSpecSnippet(providerName))
 			return nil
 		},
 	}
 	options.AddFlags(cmd)
-	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Kubernetes namespace to write the ConfigMap to")
-	cmd.Flags().StringVar(&configMapName, "name", "gcp-credentials", "name of the ConfigMap to create")
-	_ = cmd.MarkFlagRequired("namespace")
 	return cmd
-}
-
-// buildCredentialConfiguration renders the external_account credential
-// configuration that Google client libraries consume via
-// GOOGLE_APPLICATION_CREDENTIALS. providerName uses the project number.
-func buildCredentialConfiguration(providerName string) ([]byte, error) {
-	type credentialSourceFormat struct {
-		Type string `json:"type"`
-	}
-	type credentialSource struct {
-		File   string                 `json:"file"`
-		Format credentialSourceFormat `json:"format"`
-	}
-	type credentialConfiguration struct {
-		Type             string           `json:"type"`
-		Audience         string           `json:"audience"`
-		SubjectTokenType string           `json:"subject_token_type"`
-		TokenURL         string           `json:"token_url"`
-		CredentialSource credentialSource `json:"credential_source"`
-	}
-	configuration := credentialConfiguration{
-		Type:             "external_account",
-		Audience:         "//iam.googleapis.com/" + providerName,
-		SubjectTokenType: "urn:ietf:params:oauth:token-type:jwt",
-		TokenURL:         "https://sts.googleapis.com/v1/token",
-		CredentialSource: credentialSource{
-			File:   TokenMountPath + "/token",
-			Format: credentialSourceFormat{Type: "text"},
-		},
-	}
-	return json.MarshalIndent(configuration, "", "  ")
 }
 
 // TokenAudience returns the audience workloads must request in their projected
@@ -261,29 +208,19 @@ func TokenAudience(providerName string) string {
 	return "https://iam.googleapis.com/" + providerName
 }
 
-func podSpecSnippet(providerName, configMapName string) string {
+func podSpecSnippet(providerName string) string {
 	return fmt.Sprintf(`  volumes:
   - name: gcp-token
     projected:
       sources:
       - serviceAccountToken:
           audience: %s
-          expirationSeconds: 3600
           path: token
-  - name: gcp-credentials
-    configMap:
-      name: %s
   containers:
-  - # your container...
-    env:
-    - name: GOOGLE_APPLICATION_CREDENTIALS
-      value: %s/%s
+  - # your container:
     volumeMounts:
     - name: gcp-token
       mountPath: %s
       readOnly: true
-    - name: gcp-credentials
-      mountPath: %s
-      readOnly: true
-`, TokenAudience(providerName), configMapName, CredentialsMountPath, CredentialsKey, TokenMountPath, CredentialsMountPath)
+`, TokenAudience(providerName), workloadidentity.TokenDir)
 }
